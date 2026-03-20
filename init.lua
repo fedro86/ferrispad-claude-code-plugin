@@ -1,16 +1,17 @@
--- Claude Code Plugin for FerrisPad v0.4.0
+-- Claude Code Plugin for FerrisPad v0.5.0
 -- AI assistant powered by the Claude Code CLI.
 --
 -- Features:
 -- - Opens an embedded terminal running `claude` in interactive mode
 -- - Registers FerrisPad as an MCP server so Claude Code can query editor state
 -- - Auto-approves MCP tools to skip permission prompts (configurable)
+-- - Instructs Claude Code to refresh the file explorer after filesystem changes
 --
 -- Requires: claude CLI installed and authenticated (Pro/Max plan or API key)
 
 local M = {
     name = "Claude Code",
-    version = "0.4.0",
+    version = "0.5.0",
     description = "AI assistant powered by Claude Code CLI"
 }
 
@@ -98,6 +99,10 @@ local function ensure_mcp_json(api, root)
     end
 end
 
+-- The hook command that injects editor context and MCP instructions.
+-- Uses single quotes in echo to avoid breaking JSON double-quote delimiters.
+local hook_command = [[(cat ~/.config/ferrispad/editor-context.txt 2>/dev/null || true) && echo '[FerrisPad] After creating, renaming, moving, or deleting files, call the refresh_tree MCP tool to update the file explorer.']]
+
 --- Write UserPromptSubmit hook to <project>/.claude/settings.local.json
 --- so Claude Code attaches the current editor selection as context.
 local function write_selection_hook(api, root)
@@ -111,12 +116,24 @@ local function write_selection_hook(api, root)
     end
     if not existing then return end
 
-    -- Check if hook is already configured
-    if existing:find("editor%-context%.txt", 1, false) then
-        return -- already configured
+    -- Check if hook already has the refresh_tree instruction
+    if existing:find("refresh_tree", 1, true) then
+        return -- fully configured
     end
 
-    local hook_block = '"hooks": {\n    "UserPromptSubmit": [{\n      "matcher": "",\n      "hooks": [{\n        "type": "command",\n        "command": "cat ~/.config/ferrispad/editor-context.txt 2>/dev/null || true"\n      }]\n    }]\n  }'
+    -- Upgrade existing hook that only has editor-context (missing refresh_tree)
+    if existing:find("editor%-context%.txt", 1, false) then
+        local old_cmd = "cat ~/.config/ferrispad/editor-context.txt 2>/dev/null || true"
+        -- Use plain string find + concat (old_cmd has Lua pattern metacharacters)
+        local s, e = existing:find(old_cmd, 1, true)
+        if s then
+            local new = existing:sub(1, s - 1) .. hook_command .. existing:sub(e + 1)
+            api:write_file(settings_path, new)
+        end
+        return
+    end
+
+    local hook_block = '"hooks": {\n    "UserPromptSubmit": [{\n      "matcher": "",\n      "hooks": [{\n        "type": "command",\n        "command": "' .. hook_command .. '"\n      }]\n    }]\n  }'
 
     -- Find last } to insert before it
     local last_pos = nil
