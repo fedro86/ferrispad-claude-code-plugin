@@ -90,50 +90,11 @@ local function write_tool_permissions(api, root)
 end
 
 --- Write .mcp.json in a project root and update .gitignore.
+--- Binary path and MCP port are resolved internally by the Rust API.
 local function ensure_mcp_json(api, root)
-    local port = api:get_mcp_port()
-    if not port then return end
-
-    local binary = api:get_binary_path()
-    if not binary then return end
-
-    local mcp_path = root .. "/.mcp.json"
-
-    -- Don't overwrite existing .mcp.json (user may have customized it)
-    if api:file_exists(mcp_path) then return end
-
-    -- Escape backslashes and quotes for JSON string value
-    local escaped = binary:gsub("\\", "\\\\"):gsub('"', '\\"')
-    local config = string.format([[{
-  "mcpServers": {
-    "ferrispad": {
-      "type": "stdio",
-      "command": "%s",
-      "args": ["--mcp-server"]
-    }
-  }
-}]], escaped)
-
-    local ok, err = api:write_file(mcp_path, config)
-    if not ok then
-        api:log("MCP: failed to write .mcp.json: " .. (err or "unknown error"))
-        return
-    end
-
-    -- Ensure .mcp.json is in .gitignore
-    local gitignore_path = root .. "/.gitignore"
-    local content = ""
-    if api:file_exists(gitignore_path) then
-        local data, _ = api:read_file(gitignore_path)
-        if data then content = data end
-    end
-
-    if not content:find(".mcp.json", 1, true) then
-        local prefix = ""
-        if content ~= "" and content:sub(-1) ~= "\n" then
-            prefix = "\n"
-        end
-        api:write_file(gitignore_path, content .. prefix .. ".mcp.json\n")
+    local ok, err = api:setup_mcp_config(root)
+    if not ok and err and err ~= "" then
+        api:log("MCP: " .. err)
     end
 end
 
