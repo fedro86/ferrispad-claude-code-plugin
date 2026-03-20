@@ -1,0 +1,18 @@
+name = "Claude Code"
+version = "0.4.0"
+description = "AI assistant powered by Claude Code CLI"
+
+[permissions]
+execute = ["claude"]
+
+[config]
+[[config.params]]
+key = "auto_approve_mcp"
+label = "Auto-approve MCP tools (skip permission prompts)"
+type = "boolean"
+default = "true"
+
+[[menu_items]]
+label = "Claude Code"
+action = "open_chat"
+shortcut = "Ctrl+Shift+I"
