@@ -103,9 +103,17 @@ end
 -- Uses single quotes in echo to avoid breaking JSON double-quote delimiters.
 local hook_command = [[(cat ~/.config/ferrispad/editor-context.txt 2>/dev/null || true) && echo '[FerrisPad] After creating, renaming, moving, or deleting files, call the refresh_tree MCP tool to update the file explorer.']]
 
---- Write UserPromptSubmit hook to <project>/.claude/settings.local.json
---- so Claude Code attaches the current editor selection as context.
-local function write_selection_hook(api, root)
+-- PreToolUse hook: show diff preview (non-blocking, exits immediately).
+-- Saves stdin to a temp file so jq can extract multiple fields from it.
+local preview_command = [[TMP=$(mktemp /tmp/fp-pre-XXXXXX); cat > "$TMP"; PORT=$(cat ~/.config/ferrispad/mcp-port 2>/dev/null); FILE=$(jq -r '.tool_input.file_path // empty' < "$TMP" 2>/dev/null); OLD=$(jq -r '.tool_input.old_string // empty' < "$TMP" 2>/dev/null); NEW=$(jq -r '.tool_input.new_string // empty' < "$TMP" 2>/dev/null); rm -f "$TMP"; [ -n "$PORT" ] && [ -n "$FILE" ] && printf '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"preview_edit","arguments":{"path":"%s","old_string":%s,"new_string":%s,"decision_fifo":""}}}\n' "$FILE" "$(echo "$OLD" | jq -Rs .)" "$(echo "$NEW" | jq -Rs .)" | nc -w1 127.0.0.1 "$PORT" > /dev/null 2>&1; exit 0]]
+
+-- PostToolUse hook: reload the file buffer after Edit/Write.
+local reload_command = [[FILE=$(jq -r '.tool_input.file_path // empty' 2>/dev/null); PORT=$(cat ~/.config/ferrispad/mcp-port 2>/dev/null); [ -n "$PORT" ] && [ -n "$FILE" ] && printf '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"reload_file","arguments":{"path":"%s"}}}\n' "$FILE" | nc -w1 127.0.0.1 "$PORT" > /dev/null 2>&1; true]]
+
+--- Write hooks to <project>/.claude/settings.local.json:
+--- - UserPromptSubmit: injects editor context
+--- - PostToolUse: calls show_diff after Edit/Write
+local function write_hooks(api, root)
     local settings_path = root .. "/.claude/settings.local.json"
 
     -- Must have existing settings (write_tool_permissions creates it first)
@@ -116,24 +124,48 @@ local function write_selection_hook(api, root)
     end
     if not existing then return end
 
-    -- Check if hook already has the refresh_tree instruction
-    if existing:find("refresh_tree", 1, true) then
+    -- Check if hooks are fully configured (preview_edit = current version)
+    if existing:find("preview_edit", 1, true) then
         return -- fully configured
     end
 
-    -- Upgrade existing hook that only has editor-context (missing refresh_tree)
-    if existing:find("editor%-context%.txt", 1, false) then
-        local old_cmd = "cat ~/.config/ferrispad/editor-context.txt 2>/dev/null || true"
-        -- Use plain string find + concat (old_cmd has Lua pattern metacharacters)
-        local s, e = existing:find(old_cmd, 1, true)
-        if s then
-            local new = existing:sub(1, s - 1) .. hook_command .. existing:sub(e + 1)
-            api:write_file(settings_path, new)
+    -- Remove old hooks block to replace with new one
+    -- Find the "hooks" key and remove everything up to its closing }
+    local hooks_start = existing:find('"hooks"')
+    if hooks_start then
+        -- Find the matching closing brace for the hooks block
+        local depth = 0
+        local block_start = existing:find("{", hooks_start + 6)
+        if block_start then
+            local block_end = nil
+            for i = block_start, #existing do
+                local ch = existing:sub(i, i)
+                if ch == "{" then depth = depth + 1
+                elseif ch == "}" then
+                    depth = depth - 1
+                    if depth == 0 then block_end = i; break end
+                end
+            end
+            if block_end then
+                -- Remove the hooks entry (and preceding comma if any)
+                local before_hooks = existing:sub(1, hooks_start - 1):gsub(",%s*$", "")
+                local after_hooks = existing:sub(block_end + 1)
+                existing = before_hooks .. after_hooks
+            end
         end
-        return
     end
 
-    local hook_block = '"hooks": {\n    "UserPromptSubmit": [{\n      "matcher": "",\n      "hooks": [{\n        "type": "command",\n        "command": "' .. hook_command .. '"\n      }]\n    }]\n  }'
+    -- Build the hooks block with both UserPromptSubmit and PostToolUse
+    local hooks_block = string.format(
+        [["hooks": {
+    "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "%s"}]}],
+    "PreToolUse": [{"matcher": "Edit", "hooks": [{"type": "command", "command": "%s"}]}],
+    "PostToolUse": [{"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "%s"}]}]
+  }]],
+        hook_command,
+        preview_command,
+        reload_command
+    )
 
     -- Find last } to insert before it
     local last_pos = nil
@@ -146,7 +178,7 @@ local function write_selection_hook(api, root)
     if not last_pos then return end
 
     local before = existing:sub(1, last_pos - 1):gsub("%s+$", "")
-    local new = before .. ',\n  ' .. hook_block .. '\n}\n'
+    local new = before .. ',\n  ' .. hooks_block .. '\n}\n'
     api:write_file(settings_path, new)
 end
 
@@ -168,8 +200,8 @@ local function setup_mcp(api)
         write_tool_permissions(api, root)
     end
 
-    -- Write selection context hook
-    write_selection_hook(api, root)
+    -- Write hooks (context injection + auto show_diff)
+    write_hooks(api, root)
 end
 
 --- On startup: set up MCP for the CWD project (if any).
