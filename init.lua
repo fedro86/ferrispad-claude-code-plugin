@@ -155,6 +155,11 @@ local function write_hooks(api, root)
         end
     end
 
+    -- Escape double quotes for JSON embedding
+    local function json_escape(s)
+        return s:gsub('\\', '\\\\'):gsub('"', '\\"')
+    end
+
     -- Build the hooks block with both UserPromptSubmit and PostToolUse
     local hooks_block = string.format(
         [["hooks": {
@@ -162,9 +167,9 @@ local function write_hooks(api, root)
     "PreToolUse": [{"matcher": "Edit", "hooks": [{"type": "command", "command": "%s"}]}],
     "PostToolUse": [{"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "%s"}]}]
   }]],
-        hook_command,
-        preview_command,
-        reload_command
+        json_escape(hook_command),
+        json_escape(preview_command),
+        json_escape(reload_command)
     )
 
     -- Find last } to insert before it
